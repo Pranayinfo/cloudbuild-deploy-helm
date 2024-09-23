@@ -1,0 +1,119 @@
+steps:
+  # Step 1: Retrieve secrets from Secret Manager
+  - name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        # Retrieve secrets from Secret Manager
+        gcloud secrets versions access latest --secret=excelr-env-secrets --format='get(payload.data)' | tr '_-' '/+' | base64 -d > .env
+
+  # Step 2: Build Docker images for frontend (student, trainer, admin)
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'build',
+      '-t', 'asia-south1-docker.pkg.dev/${_PROJECT_ID}/${_REPO}/excelr-student-frontend:${BRANCH_NAME}',
+      '--build-arg', 'ENV=${_ENV}',
+      '--build-arg', 'SECRET_ENV_FILE=.env',
+      '-f', 'frontend/student.Dockerfile',
+      '.'
+    ]
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'build',
+      '-t', 'asia-south1-docker.pkg.dev/${_PROJECT_ID}/${_REPO}/excelr-trainer-frontend:${BRANCH_NAME}',
+      '--build-arg', 'ENV=${_ENV}',
+      '-f', 'frontend/trainer.Dockerfile',
+      '.'
+    ]
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'build',
+      '-t', 'asia-south1-docker.pkg.dev/${_PROJECT_ID}/${_REPO}/excelr-admin-frontend:${BRANCH_NAME}',
+      '--build-arg', 'ENV=${_ENV}',
+      '-f', 'frontend/admin.Dockerfile',
+      '.'
+    ]
+
+  # Step 3: Build Docker images for backend (admin, auth, users, trainer)
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'build',
+      '-t', 'asia-south1-docker.pkg.dev/${_PROJECT_ID}/${_REPO}/excelr-admin-backend:${BRANCH_NAME}',
+      '-f', 'backend/admin.Dockerfile',
+      '.'
+    ]
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'build',
+      '-t', 'asia-south1-docker.pkg.dev/${_PROJECT_ID}/${_REPO}/excelr-auth-backend:${BRANCH_NAME}',
+      '-f', 'backend/auth.Dockerfile',
+      '.'
+    ]
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'build',
+      '-t', 'asia-south1-docker.pkg.dev/${_PROJECT_ID}/${_REPO}/excelr-users-backend:${BRANCH_NAME}',
+      '-f', 'backend/users.Dockerfile',
+      '.'
+    ]
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'build',
+      '-t', 'asia-south1-docker.pkg.dev/${_PROJECT_ID}/${_REPO}/excelr-trainer-backend:${BRANCH_NAME}',
+      '-f', 'backend/trainer.Dockerfile',
+      '.'
+    ]
+
+  # Step 4: Push all Docker images to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'asia-south1-docker.pkg.dev/${_PROJECT_ID}/${_REPO}/excelr-admin-backend:${BRANCH_NAME}']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'asia-south1-docker.pkg.dev/${_PROJECT_ID}/${_REPO}/excelr-auth-backend:${BRANCH_NAME}']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'asia-south1-docker.pkg.dev/${_PROJECT_ID}/${_REPO}/excelr-users-backend:${BRANCH_NAME}']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'asia-south1-docker.pkg.dev/${_PROJECT_ID}/${_REPO}/excelr-trainer-backend:${BRANCH_NAME}']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'asia-south1-docker.pkg.dev/${_PROJECT_ID}/${_REPO}/excelr-student-frontend:${BRANCH_NAME}']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'asia-south1-docker.pkg.dev/${_PROJECT_ID}/${_REPO}/excelr-trainer-frontend:${BRANCH_NAME}']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'asia-south1-docker.pkg.dev/${_PROJECT_ID}/${_REPO}/excelr-admin-frontend:${BRANCH_NAME}']
+
+  # Step 5: Helm deployment on GKE
+  - name: 'google/cloud-sdk:slim'
+    entrypoint: 'sh'
+    args:
+      - -c
+      - |
+        # Set up GKE authentication
+        gcloud config set project ${_PROJECT_ID}
+        gcloud config set compute/zone ${_ZONE}
+        gcloud container clusters get-credentials ${_CLUSTER} --region ${_ZONE}
+        
+        # Install Helm
+        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        
+        # Update image tags in values.yaml
+        sed -i '/admin:/,/repository:/s|repository:.*|repository: asia-south1-docker.pkg.dev/${_PROJECT_ID}/${_REPO}/excelr-admin-backend|' ./excelr-helm/charts/backend/values.yaml
+        sed -i '/admin:/,/tag:/s|tag:.*|tag: ${BRANCH_NAME}|' ./excelr-helm/charts/backend/values.yaml
+        
+        sed -i '/student:/,/repository:/s|repository:.*|repository: asia-south1-docker.pkg.dev/${_PROJECT_ID}/${_REPO}/excelr-student-frontend|' ./excelr-helm/charts/frontend/values.yaml
+        sed -i '/student:/,/tag:/s|tag:.*|tag: ${BRANCH_NAME}|' ./excelr-helm/charts/frontend/values.yaml
+        
+        # Deploy Helm chart
+        helm upgrade --install excelr-deploy ./excelr-helm -n excelr-deploy
+
+
+substitutions:
+  _REGION: asia-south1
+  _ZONE: asia-south1-a
+  _CLUSTER: excelr-gke-cluster-1
+  _ENV: prod
+  _PROJECT_ID: excelr-lms
+  _REPO: excelr-website
+  _SEVERITY: CRITICAL
+
+options:
+  logging: CLOUD_LOGGING_ONLY
